@@ -1,0 +1,103 @@
+import os
+import torch
+import transformers
+from trl import SFTTrainer
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import LoraConfig
+from datasets import load_dataset
+from datetime import datetime
+import os
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+
+# data formatting function
+# def formatting_func_riddle(example):
+#     text = f"Question: {example['question'][0]}\nAnswer: {example['answer'][0]}<eos>"
+#     return [text]
+
+
+# set up the environment
+now = datetime.now()
+time_str = now.strftime('%Y-%m-%d-%H-%M-%S')
+secret_value_hf = ""
+secret_value_wandb = ""
+os.environ["HF_TOKEN"] = secret_value_hf
+os.environ["wandb-key"] = secret_value_wandb
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+model_id = "gemma-2-2b"
+device = "cuda"
+
+# load the tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+# load the data
+riddle_dataset = load_dataset("json", data_files="datasets/Riddle/riddles_cleaned.json", split="train")
+print("Raw datasets:")
+print("Riddle dataset:")
+print(riddle_dataset.column_names)
+print("Example item:", riddle_dataset[0])
+
+# preprocess the data
+riddle_data = riddle_dataset.map(lambda samples: tokenizer(samples["question"], samples["answer"], return_tensors="pt", padding=True), batched=True)
+riddle_data = riddle_data.train_test_split(test_size=0.2)
+
+# save the data
+riddle_data.save_to_disk("atasets/Riddle/riddle_data_all")
+
+# quantize the model to reduce its weight
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,  # 使用 4-bit 量化
+    bnb_4bit_quant_type="nf4",  # 量化类型
+    bnb_4bit_compute_dtype=torch.bfloat16,  # 计算时使用 bfloat16
+    bnb_4bit_use_double_quant=True,  # 使用双重量化以进一步减少显存占用
+)
+
+# load the final model
+model = AutoModelForCausalLM.from_pretrained(
+    model_id, quantization_config=bnb_config, device_map={"": 0}
+)
+
+# define tuning parameters
+lora_config = LoraConfig(
+    r=8,  # 低秩矩阵的秩
+    lora_alpha=32,  # 缩放因子
+    target_modules=[
+        "q_proj",
+        "v_proj",
+        "k_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ],  # 目标模块
+    lora_dropout=0.1,  # Dropout 概率
+    bias="none",  # 是否微调偏置
+    task_type="CAUSAL_LM",  # 任务类型
+)
+
+# train the model
+args = transformers.TrainingArguments(
+    per_device_train_batch_size=8,
+    gradient_accumulation_steps=32,
+    num_train_epochs=3,
+    # max_steps=100,
+    learning_rate=2e-4,
+    fp16=True,
+    logging_steps=30,
+    output_dir="outputs/riddle-fine-tuning-checkpoint" + time_str,
+    optim="paged_adamw_8bit",
+    save_steps=30,
+    eval_steps=30,
+)
+
+trainer = SFTTrainer(
+    model=model,
+    train_dataset=riddle_data["train"],
+    args=args,
+    peft_config=lora_config,
+    # formatting_func=formatting_func_riddle,
+    max_seq_length=512,
+)
+
+trainer.train()
+
+
