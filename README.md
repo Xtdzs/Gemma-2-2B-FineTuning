@@ -292,3 +292,5 @@ Question: 爸爸再婚，我是不是就有了个新娘？, Answer: 爸爸再婚
 ### 9.1 源码
 
 全部源码及数据集均已上传至Github中，详情见[Xtdzs/Gemma-2-2B-FineTuning](https://github.com/Xtdzs/Gemma-2-2B-FineTuning)。
+
+此次实验是我第一次接触大模型领域，为期三天的限时实验赋予了我许多理解和经验。
